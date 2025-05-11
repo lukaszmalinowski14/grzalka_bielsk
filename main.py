@@ -117,21 +117,23 @@ def aktualizuj_z_github():
             with open("main.py", "w") as f:
                 f.write(response.text)
 
-            # ZMIANA TRYBU na zawsze38 po update
+            # ZMIANA TRYBU na zawsze38 (PATCH id=1)
             try:
                 print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38")
-                url = SUPABASE_URL + "/rest/v1/ustawienia"
+                url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
                 headers = {
                     "apikey": SUPABASE_PUBLISHABLE_KEY,
                     "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
                     "Content-Type": "application/json",
                 }
                 payload = json.dumps({"tryb": "zawsze38"})
-                requests.post(url, headers=headers)
+                res = requests.patch(url, headers=headers, data=payload)
+                print("📬 Supabase response:", res.status_code, res.text)
             except Exception as e:
                 print("❌ Nie udało się zresetować trybu:", e)
 
             print("✅ Zaktualizowano main.py – restartuję Pico...")
+            time.sleep(2)
             machine.reset()
         else:
             print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
