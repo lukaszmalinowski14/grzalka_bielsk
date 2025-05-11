@@ -26,6 +26,7 @@ TRYB_DZIALANIA = (
 GITHUB_RAW_URL = (
     "https://raw.githubusercontent.com/lukaszmalinowski14/grzalka_bielsk/main/main.py"
 )
+TEMP = 36.0
 
 
 # --- Połączenie Wi-Fi ---
@@ -43,7 +44,7 @@ def connect_wifi(ssid, password, timeout=30):
             print("✅ Połączono!", wlan.ifconfig())
             return wlan
         else:
-            print("❌ Timeout ({timeout}s). Ponawiam...")
+            print(f"❌ Timeout ({timeout}s). Ponawiam...")
             wlan.disconnect()
             attempt += 1
             time.sleep(5)
@@ -139,7 +140,7 @@ def zapisz_do_supabase(temp, grzanie, pv_power, tryb_dzialania):
 
 
 def sterowanie_zawsze38(temp, godzina, minuta, pv_power):
-    return temp < 38.0
+    return temp < TEMP
 
 
 # --- Algorytm standardowy ---
@@ -168,9 +169,9 @@ def sterowanie_standard_6(temp, godzina, minuta, pv_power):
 
     # 1 Godziny kąpielowe - wymagane minimum 38°C
     if 5 * 60 <= total_minutes < 6 * 60:
-        return temp < 38.0
+        return temp < TEMP
     if 20 * 60 <= total_minutes < 20 * 60 + 30:
-        return temp < 38.0
+        return temp < TEMP
 
     # 2 Okno PV 13-20 – dogrzewanie do 40°C jeśli PV > 1.5 kW
     if 13 <= godzina < 20 and pv_power >= 1.5:
@@ -187,7 +188,7 @@ def sterowanie_standard_6(temp, godzina, minuta, pv_power):
     minutes_left = minutes_to_target_window(total_minutes)
     if minutes_left is not None:
         predicted_temp = temp + (minutes_left // 5) * 1.2
-        return predicted_temp < 38.0
+        return predicted_temp < TEMP
 
     return False
 
@@ -197,7 +198,7 @@ def sterowanie_silowania(temp, godzina, minuta, pv_power):
 
     # Godziny kąpielowe - wymagane minimum 38°C
     if 18 * 60 <= total_minutes < 19 * 60:
-        return temp < 38.0
+        return temp < TEMP
 
     # Przewidywanie na podstawie czasu do następnego okna i szybkości nagrzewania (1.2°C / 5 min)
     def minutes_to_target_window(now):
@@ -210,7 +211,7 @@ def sterowanie_silowania(temp, godzina, minuta, pv_power):
     minutes_left = minutes_to_target_window(total_minutes)
     if minutes_left is not None:
         predicted_temp = temp + (minutes_left // 5) * 1.2
-        return predicted_temp < 38.0
+        return predicted_temp < TEMP
 
     # Okno PV 11:00–13:00 – dogrzewanie do 45°C jeśli PV > 1.5 kW
     if 11 <= godzina < 13 and pv_power >= 1.5:
@@ -224,9 +225,9 @@ def sterowanie_standard_8(temp, godzina, minuta, pv_power):
 
     # 1 Godziny kąpielowe - wymagane minimum 38°C
     if 6 * 60 + 15 <= total_minutes < 7 * 60 + 30:
-        return temp < 38.0
+        return temp < TEMP
     if 20 * 60 <= total_minutes < 20 * 60 + 30:
-        return temp < 38.0
+        return temp < TEMP
 
     # 2 Okno PV 13-20 – dogrzewanie do 40°C jeśli PV > 1.5 kW
     if 13 <= godzina < 20 and pv_power >= 1.5:
@@ -243,7 +244,7 @@ def sterowanie_standard_8(temp, godzina, minuta, pv_power):
     minutes_left = minutes_to_target_window(total_minutes)
     if minutes_left is not None:
         predicted_temp = temp + (minutes_left // 5) * 1.2
-        return predicted_temp < 38.0
+        return predicted_temp < TEMP
 
     return False
 
@@ -312,8 +313,6 @@ def pobierz_tryb_dzialania():
         print("❌ Błąd pobierania trybu z Supabase:", e)
         print("⚠️ Brak połączenia – ustawiam tryb awaryjny 'zawsze38'")
         TRYB_DZIALANIA = "zawsze38"
-    except Exception as e:
-        print("❌ Błąd pobierania trybu z Supabase:", e)
 
 
 # --- Start programu ---
