@@ -94,6 +94,21 @@ def ustaw_czas_google(api_key, lat=52.2297, lng=21.0122):
 
 
 # --- Automatyczna aktualizacja z GitHub ---
+# def aktualizuj_z_github():
+#     try:
+#         print("⬇️ Pobieranie najnowszego main.py z GitHub...")
+#         response = requests.get(GITHUB_RAW_URL)
+#         if response.status_code == 200:
+#             with open("main.py", "w") as f:
+#                 f.write(response.text)
+#             print("✅ Zaktualizowano main.py – restartuję Pico...")
+#             machine.reset()
+#         else:
+#             print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
+#     except Exception as e:
+#         print("❌ Wyjątek podczas aktualizacji:", e)
+
+
 def aktualizuj_z_github():
     try:
         print("⬇️ Pobieranie najnowszego main.py z GitHub...")
@@ -101,6 +116,21 @@ def aktualizuj_z_github():
         if response.status_code == 200:
             with open("main.py", "w") as f:
                 f.write(response.text)
+
+            # ZMIANA TRYBU na zawsze38 po update
+            try:
+                print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38")
+                url = SUPABASE_URL + "/rest/v1/ustawienia"
+                headers = {
+                    "apikey": SUPABASE_PUBLISHABLE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
+                    "Content-Type": "application/json",
+                }
+                payload = json.dumps({"tryb": "zawsze38"})
+                requests.post(url, headers=headers)
+            except Exception as e:
+                print("❌ Nie udało się zresetować trybu:", e)
+
             print("✅ Zaktualizowano main.py – restartuję Pico...")
             machine.reset()
         else:
