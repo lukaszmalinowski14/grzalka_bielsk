@@ -149,6 +149,7 @@ def zapisz_do_supabase(temp, grzanie, pv_power, tryb_dzialania):
         "standard_6": 2,
         "silownia": 3,
         "zawsze38": 4,
+        "opt": 6,
     }
     tryb_id = TRYBY.get(tryb_dzialania)
     url = SUPABASE_URL + "/rest/v1/dane_podgrzewania"
@@ -249,6 +250,14 @@ def sterowanie_silowania(temp, godzina, minuta, pv_power):
     if 11 <= godzina < 13 and pv_power >= 1.5:
         return temp < 45.0
 
+    return False
+
+
+def opt(temp, godzina, minuta, pv_power):
+    if temp < TEMP:
+        return True
+    if pv_power >= 2.0 and temp < 39.0:
+        return True
     return False
 
 
@@ -375,6 +384,8 @@ while xsrf_token:
         grzanie_on = sterowanie_silowania(temp, hour, minute, pv_power)
     elif TRYB_DZIALANIA == "update":
         aktualizuj_z_github()
+    elif TRYB_DZIALANIA == "opt":
+        grzanie_on = opt(temp, hour, minute, pv_power)
     else:
         print("⚠️ Nieznany tryb! Domyślnie przełączam na 'zawsze38'")
         grzanie_on = sterowanie_zawsze38(temp, hour, minute, pv_power)
