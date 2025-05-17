@@ -26,7 +26,9 @@ TRYB_DZIALANIA = (
 GITHUB_RAW_URL = (
     "https://raw.githubusercontent.com/lukaszmalinowski14/grzalka_bielsk/main/main.py"
 )
-TEMP = 36.0
+TEMP = 35.0
+prognoza_wyslana = False
+PROGNOZA = 0.0
 
 
 # --- Połączenie Wi-Fi ---
@@ -107,6 +109,66 @@ def ustaw_czas_google(api_key, lat=52.2297, lng=21.0122):
 #             print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
 #     except Exception as e:
 #         print("❌ Wyjątek podczas aktualizacji:", e)
+def pobierz_prognoze_z_supabase():
+    global PROGNOZA
+    try:
+        url = SUPABASE_URL + "/rest/v1/prognoza?select=value&id=eq.1"
+        headers = {
+            "apikey": SUPABASE_PUBLISHABLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
+        }
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            if data and "value" in data[0]:
+                PROGNOZA = data[0]["value"]
+                print(f"📥 Prognoza z Supabase: {PROGNOZA:.2f} kWh")
+        else:
+            print("❌ Błąd pobierania prognozy z Supabase:", response.status_code)
+        response.close()
+    except Exception as e:
+        print("❌ Wyjątek przy pobieraniu prognozy z Supabase:", e)
+
+
+def pobierz_prognoze_i_zapisz():
+    global prognoza_wyslana, PROGNOZA
+    t = time.localtime()
+    if t[3] == 6 and not prognoza_wyslana:
+        try:
+            print("🌤 Pobieram prognozę z Solcast...")
+            headers = {"Authorization": secrets.SOLCAST_PWD}
+            response = requests.get(secrets.SOLCAST_URL, headers=headers)
+
+            if response.status_code == 200:
+                dane = response.json()
+                dzien_str = f"{t[0]:04d}-{t[1]:02d}-{t[2]:02d}"
+
+                suma = 0.0
+                for entry in dane.get("forecasts", []):
+                    if entry["period_end"].startswith(dzien_str):
+                        suma += entry.get("pv_estimate", 0)
+
+                print(f"🔆 Suma prognoz na dzisiaj: {suma:.2f} kWh")
+
+                url = SUPABASE_URL + "/rest/v1/prognoza?id=eq.1"
+                headers = {
+                    "Content-Type": "application/json",
+                    "apikey": SUPABASE_PUBLISHABLE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
+                }
+                PROGNOZA = suma
+                payload = json.dumps({"value": round(suma, 3)})
+                res = requests.patch(url, headers=headers, data=payload)
+                print("📬 Zapisano prognozę:", res.status_code, res.text)
+
+                prognoza_wyslana = True  # ✅ ustaw flagę
+            else:
+                print("❌ Błąd pobierania prognozy:", response.status_code)
+        except Exception as e:
+            print("❌ Wyjątek przy pobieraniu prognozy:", e)
+
+    elif t[3] != 6:
+        prognoza_wyslana = False  # 🔁 zresetuj flagę po 6:59
 
 
 def aktualizuj_z_github():
@@ -253,12 +315,80 @@ def sterowanie_silowania(temp, godzina, minuta, pv_power):
     return False
 
 
+# opt v1
+# def opt(temp, godzina, minuta, pv_power):
+#     if temp < TEMP:
+#         return True
+#     if pv_power >= 2.0 and temp < 39.0:
+#         return True
+#     return False
+
+
+# opt v2
+# def opt(temp, godzina, minuta, pv_power):
+#     global PROGNOZA
+
+#     # Zakładana temperatura bazowa
+#     temp_min = TEMP
+#     temp_dogrzej = 39.0
+
+#     if PROGNOZA < 5:
+#         # Mała produkcja – utrzymuj minimalną temperaturę
+#         return temp < temp_min
+
+#     elif PROGNOZA < 10:
+#         # Średnia produkcja – utrzymuj niższą temp, dogrzewaj przy PV >= 1.0
+#         if temp < temp_min - 2:
+#             return True
+#         if pv_power >= 1.0 and temp < temp_dogrzej:
+#             return True
+
+#     elif PROGNOZA < 15:
+#         # Większa produkcja – dogrzewaj przy PV >= 1.5
+#         if temp < temp_min - 2:
+#             return True
+#         if pv_power >= 1.5 and temp < temp_dogrzej:
+#             return True
+
+#     else:
+#         # Bardzo wysoka produkcja – dogrzewaj przy PV >= 2.0
+#         if temp < temp_min - 2:
+#             return True
+#         if pv_power >= 2.0 and temp < temp_dogrzej:
+#             return True
+
+#     return False
+
+
+# opt v3
 def opt(temp, godzina, minuta, pv_power):
-    if temp < TEMP:
-        return True
-    if pv_power >= 2.0 and temp < 39.0:
-        return True
-    return False
+    global PROGNOZA
+
+    night_hours = godzina >= 16 or godzina < 6  # 16:00–06:00
+    low_threshold = TEMP
+
+    if PROGNOZA < 5:
+        return temp < TEMP
+
+    elif 5 <= PROGNOZA < 10:
+        if night_hours:
+            return temp < low_threshold
+        else:
+            return pv_power >= 1.0 and temp < 39.0
+
+    elif 10 <= PROGNOZA < 15:
+        if night_hours:
+            return temp < low_threshold
+        else:
+            return pv_power >= 1.5 and temp < 39.0
+
+    elif PROGNOZA >= 15:
+        if night_hours:
+            return temp < low_threshold
+        else:
+            return pv_power >= 2.0 and temp < 39.0
+
+    return False  # domyślnie nie grzej
 
 
 def sterowanie_standard_8(temp, godzina, minuta, pv_power):
@@ -362,11 +492,13 @@ ustaw_czas_google(api_key="AIzaSyD1c4oNyiLJ3VUbCv25dJIi6G8LceVZ9pI")
 
 ds, roms = init_temp_sensor()
 xsrf_token = login_and_get_token()
+pobierz_prognoze_z_supabase()
 relay_pin = machine.Pin(16, machine.Pin.OUT)
 relay_pin.value(0)
 
 while xsrf_token:
     sprawdz_i_polacz_wifi()
+    pobierz_prognoze_i_zapisz()
     pobierz_tryb_dzialania()
     pv_power = get_active_power(xsrf_token)
     temp = odczytaj_temperature(ds, roms)
