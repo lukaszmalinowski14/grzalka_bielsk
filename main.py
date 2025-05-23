@@ -148,6 +148,8 @@ def pobierz_prognoze_i_zapisz():
                     if entry["period_end"].startswith(dzien_str):
                         suma += entry.get("pv_estimate", 0)
 
+                suma = suma * 0.5
+
                 print(f"🔆 Suma prognoz na dzisiaj: {suma:.2f} kWh")
 
                 url = SUPABASE_URL + "/rest/v1/prognoza?id=eq.1"
