@@ -376,7 +376,7 @@ def opt(temp, godzina, minuta, pv_power):
         if night_hours:
             return temp < low_threshold
         else:
-            return pv_power >= 1.0 and temp < 39.0
+            return pv_power >= 0.7 and temp < 39.0
 
     elif 10 <= PROGNOZA < 15:
         if night_hours:
