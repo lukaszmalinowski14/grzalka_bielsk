@@ -29,6 +29,7 @@ GITHUB_RAW_URL = (
 TEMP = 35.0
 prognoza_wyslana = False
 PROGNOZA = 0.0
+LOG_GAP = {}
 
 
 # --- Połączenie Wi-Fi ---
@@ -206,7 +207,7 @@ def aktualizuj_z_github():
 
 
 # ZAPIS DANYCH LIVE DO SUPABASE
-def zapisz_do_supabase(temp, grzanie, pv_power, tryb_dzialania):
+def zapisz_do_supabase(temp, grzanie, pv_power, tryb_dzialania, log_gap):
     # Mapa tekst → id
     TRYBY = {
         "standard_8": 1,
@@ -227,6 +228,7 @@ def zapisz_do_supabase(temp, grzanie, pv_power, tryb_dzialania):
         "grzanie": grzanie,
         "pv_moc": pv_power,
         "tryb": tryb_id,
+        "log_gap": log_gap,
     }
     try:
         response = requests.post(url, headers=headers, data=json.dumps(payload))
@@ -438,12 +440,14 @@ def login_and_get_token():
 
 # --- Odczyt PV ---
 def get_active_power(xsrf_token):
+    global LOG_GAP
     try:
         payload = {"devIds": DEVIDS, "devTypeId": DEVTYPEID}
         headers = {"Content-Type": "application/json", "xsrf-token": xsrf_token}
         response = requests.post(DEVLIST_URL, json=payload, headers=headers)
         if response.status_code == 200:
             data = response.json()
+            LOG_GAP = data
             return float(data["data"][0]["dataItemMap"].get("active_power", 0))
     except:
         pass
@@ -527,7 +531,7 @@ while xsrf_token:
         f"🔎 Sprawdzenie: godzina={hour}, PV={pv_power}, temp={temp}, TRYB={TRYB_DZIALANIA}"
     )
     relay_pin.value(1 if grzanie_on else 0)
-    zapisz_do_supabase(temp, grzanie_on, pv_power, TRYB_DZIALANIA)
+    zapisz_do_supabase(temp, grzanie_on, pv_power, TRYB_DZIALANIA, LOG_GAP)
 
     print(
         f"[{hour:02}:{minute:02}] Temp: {temp:.1f}°C | Grzanie: {'ON' if grzanie_on else 'OFF'} | PV: {pv_power}W | Tryb: {TRYB_DZIALANIA}"
