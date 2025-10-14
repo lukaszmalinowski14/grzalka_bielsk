@@ -26,7 +26,7 @@ TRYB_DZIALANIA = (
 GITHUB_RAW_URL = (
     "https://raw.githubusercontent.com/lukaszmalinowski14/grzalka_bielsk/main/main.py"
 )
-TEMP = 35.0
+TEMP = 38.0
 prognoza_wyslana = False
 PROGNOZA = 0.0
 LOG_GAP = {}
