@@ -241,36 +241,171 @@ def pobierz_prognoze_i_zapisz():
         prognoza_wyslana = False  # 🔁 zresetuj flagę po 6:59
 
 
+# def aktualizuj_z_github():
+#     try:
+#         print("⬇️ Pobieranie najnowszego main.py z GitHub...")
+#         response = requests.get(GITHUB_RAW_URL)
+#         if response.status_code == 200:
+#             with open("main.py", "w") as f:
+#                 f.write(response.text)
+
+#             # ZMIANA TRYBU na zawsze38 (PATCH id=1)
+#             try:
+#                 print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38")
+#                 url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
+#                 headers = {
+#                     "apikey": SUPABASE_PUBLISHABLE_KEY,
+#                     "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
+#                     "Content-Type": "application/json",
+#                 }
+#                 payload = json.dumps({"tryb": "zawsze38"})
+#                 res = requests.patch(url, headers=headers, data=payload)
+#                 print("📬 Supabase response:", res.status_code, res.text)
+#             except Exception as e:
+#                 print("❌ Nie udało się zresetować trybu:", e)
+
+#             print("✅ Zaktualizowano main.py – restartuję Pico...")
+#             time.sleep(2)
+#             machine.reset()
+#         else:
+#             print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
+#     except Exception as e:
+#         print("❌ Wyjątek podczas aktualizacji:", e)
+
+
 def aktualizuj_z_github():
+    import usocket as socket
+
     try:
+        import uos as os  # MicroPython
+    except:
+        import os  # fallback (gdybyś uruchamiał gdzie indziej)
+
+    # Pliki do aktualizacji
+    TARGET = "main.py"
+    TMP = "main.new"
+    BAK = "main.bak"
+
+    # Zwiększ timeout tylko na czas aktualizacji
+    try:
+        old_to = socket.getdefaulttimeout()
+    except:
+        old_to = None
+
+    try:
+        socket.setdefaulttimeout(12)  # luźniejszy limit na pobranie pliku
+
         print("⬇️ Pobieranie najnowszego main.py z GitHub...")
-        response = requests.get(GITHUB_RAW_URL)
-        if response.status_code == 200:
-            with open("main.py", "w") as f:
-                f.write(response.text)
+        headers = {"Cache-Control": "no-cache"}
+        r = requests.get(GITHUB_RAW_URL, headers=headers)
 
-            # ZMIANA TRYBU na zawsze38 (PATCH id=1)
+        try:
+            if r.status_code != 200:
+                print("❌ Błąd pobierania pliku z GitHub:", r.status_code)
+                return
+
+            content = r.text
+        finally:
             try:
-                print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38")
-                url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
-                headers = {
-                    "apikey": SUPABASE_PUBLISHABLE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
-                    "Content-Type": "application/json",
-                }
-                payload = json.dumps({"tryb": "zawsze38"})
-                res = requests.patch(url, headers=headers, data=payload)
-                print("📬 Supabase response:", res.status_code, res.text)
-            except Exception as e:
-                print("❌ Nie udało się zresetować trybu:", e)
+                r.close()
+            except:
+                pass
 
-            print("✅ Zaktualizowano main.py – restartuję Pico...")
-            time.sleep(2)
-            machine.reset()
-        else:
-            print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
+        # Prosta walidacja, żeby nie podmienić na śmieci
+        if (
+            not content
+            or len(content) < 2000
+            or ("while True" not in content and "machine.reset" not in content)
+        ):
+            print(
+                "❌ Plik z GitHub wygląda podejrzanie (za krótki lub brak znaczników). Aktualizacja przerwana."
+            )
+            return
+
+        # Zapis do pliku tymczasowego
+        try:
+            # usuń stary TMP jeśli był
+            try:
+                if TMP in os.listdir():
+                    os.remove(TMP)
+            except:
+                pass
+
+            with open(TMP, "w") as f:
+                f.write(content)
+        except Exception as e:
+            print("❌ Nie udało się zapisać pliku tymczasowego:", e)
+            return
+
+        # Kopia zapasowa obecnego main.py
+        try:
+            if TARGET in os.listdir():
+                try:
+                    if BAK in os.listdir():
+                        os.remove(BAK)
+                except:
+                    pass
+                os.rename(TARGET, BAK)
+        except Exception as e:
+            print("⚠️ Nie udało się wykonać backupu:", e)
+
+        # Podmiana atomowa: TMP -> TARGET
+        try:
+            try:
+                if TARGET in os.listdir():
+                    os.remove(TARGET)
+            except:
+                pass
+            os.rename(TMP, TARGET)
+        except Exception as e:
+            print("❌ Nie udało się podmienić main.py:", e)
+            # W razie porażki spróbuj przywrócić z backupu
+            try:
+                if (BAK in os.listdir()) and (TARGET not in os.listdir()):
+                    os.rename(BAK, TARGET)
+            except:
+                pass
+            return
+
+        # (opcjonalnie) wymuś tryb bezpieczny po aktualizacji
+        try:
+            print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38 (Supabase)")
+            url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
+            headers = {
+                "apikey": SUPABASE_PUBLISHABLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
+                "Content-Type": "application/json",
+            }
+            payload = json.dumps({"tryb": "zawsze38"})
+            res = requests.patch(url, headers=headers, data=payload)
+            print("📬 Supabase response:", res.status_code, res.text)
+            try:
+                res.close()
+            except:
+                pass
+        except Exception as e:
+            print("❌ Nie udało się zresetować trybu:", e)
+
+        print("✅ Zaktualizowano main.py – restartuję Pico...")
+        time.sleep(2)
+        machine.reset()
+
     except Exception as e:
         print("❌ Wyjątek podczas aktualizacji:", e)
+
+    finally:
+        # Przywróć poprzedni timeout
+        try:
+            if old_to is not None:
+                socket.setdefaulttimeout(old_to)
+        except:
+            pass
+        # Sprzątanie TMP jeśli został
+        try:
+            if TMP in os.listdir():
+                os.remove(TMP)
+        except:
+            pass
 
 
 # ZAPIS DANYCH LIVE DO SUPABASE
@@ -632,21 +767,14 @@ def init_temp_sensor():
     ow = onewire.OneWire(ds_pin)
     ds = ds18x20.DS18X20(ow)
     roms = ds.scan()
-    if not roms:
-        print("⚠️ Nie znaleziono DS18B20!")
     return ds, roms
 
 
 def odczytaj_temperature(ds, roms):
-    if not roms:
-        raise RuntimeError("Brak czujnika DS18B20")
     ds.convert_temp()
     time.sleep_ms(750)
     for rom in roms:
-        t = ds.read_temp(rom)
-        if t is not None:
-            return t
-    raise RuntimeError("DS18B20 zwrócił None")
+        return ds.read_temp(rom)
 
 
 # --- Odczyt trybu działania z Supabase ---
