@@ -33,11 +33,11 @@ LOG_GAP = {}
 
 
 # --- Połączenie Wi-Fi ---
-def connect_wifi(ssid, password, timeout=30, max_attempts=3):
+def connect_wifi(ssid, password, timeout=30):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     attempt = 1
-    while attempt <= max_attempts:
+    while not wlan.isconnected():
         print(f"Próba {attempt}: Łączenie z Wi-Fi...")
         wlan.connect(ssid, password)
         start_time = time.time()
@@ -46,13 +46,11 @@ def connect_wifi(ssid, password, timeout=30, max_attempts=3):
         if wlan.isconnected():
             print("✅ Połączono!", wlan.ifconfig())
             return wlan
-        print(f"❌ Timeout ({timeout}s). Ponawiam...")
-        wlan.disconnect()
-        attempt += 1
-        time.sleep(5)
-
-    print("⚠️ Nie udało się połączyć z Wi-Fi.")
-    return None
+        else:
+            print(f"❌ Timeout ({timeout}s). Ponawiam...")
+            wlan.disconnect()
+            attempt += 1
+            time.sleep(5)
 
 
 # --- Pobierz czas lokalny z API ---
@@ -262,38 +260,7 @@ def sprawdz_i_polacz_wifi():
     wlan = network.WLAN(network.STA_IF)
     if not wlan.isconnected():
         print("Utracono Wi-Fi – ponawiam połączenie...")
-        return connect_wifi(WIFI_SSID, WIFI_PASS)
-    return wlan
-
-
-def tryb_offline_utrzymuj_temperature(relay_pin, ds, roms):
-    print("🛡️ Przechodzę w tryb awaryjny – brak Internetu.")
-    while True:
-        wlan = connect_wifi(WIFI_SSID, WIFI_PASS, max_attempts=1)
-        if wlan and wlan.isconnected():
-            print("✅ Połączenie z Internetem przywrócone.")
-            return wlan
-
-        temp = odczytaj_temperature(ds, roms)
-        if temp is None:
-            print("⚠️ Nie udało się odczytać temperatury – czekam 5 minut.")
-            relay_pin.value(0)
-            time.sleep(300)
-            continue
-
-        if temp < TEMP:
-            print(
-                f"🔥 Tryb offline: temp {temp:.1f}°C < {TEMP:.1f}°C – włączam grzanie na 5 minut."
-            )
-            relay_pin.value(1)
-            time.sleep(300)
-            relay_pin.value(0)
-        else:
-            print(
-                f"🌡 Tryb offline: temp {temp:.1f}°C ≥ {TEMP:.1f}°C – utrzymuję przerwę 5 minut."
-            )
-            relay_pin.value(0)
-            time.sleep(300)
+        connect_wifi(WIFI_SSID, WIFI_PASS)
 
 
 def sterowanie_standard_6(temp, godzina, minuta, pv_power):
@@ -480,19 +447,11 @@ def get_active_power(xsrf_token):
         response = requests.post(DEVLIST_URL, json=payload, headers=headers)
         if response.status_code == 200:
             data = response.json()
-            if isinstance(data, dict) and data.get("message") == "USER_MUST_RELOGIN":
-                print("⚠️ FusionSolar wymaga ponownego logowania (USER_MUST_RELOGIN).")
-                response.close()
-                return 0.0, True
-
             LOG_GAP = data
-            response.close()
-            return float(data["data"][0]["dataItemMap"].get("active_power", 0)), False
-
-        response.close()
-    except Exception as e:
-        print("❌ Błąd pobierania mocy z FusionSolar:", e)
-    return 0.0, False
+            return float(data["data"][0]["dataItemMap"].get("active_power", 0))
+    except:
+        pass
+    return 0
 
 
 # --- Temperatura DS18B20 ---
@@ -534,82 +493,47 @@ def pobierz_tryb_dzialania():
 
 
 # --- Start programu ---
+connect_wifi(WIFI_SSID, WIFI_PASS)
+ustaw_czas_google(api_key="AIzaSyD1c4oNyiLJ3VUbCv25dJIi6G8LceVZ9pI")
+
 ds, roms = init_temp_sensor()
+xsrf_token = login_and_get_token()
+pobierz_prognoze_z_supabase()
 relay_pin = machine.Pin(16, machine.Pin.OUT)
 relay_pin.value(0)
 
-while True:
-    wlan = connect_wifi(WIFI_SSID, WIFI_PASS)
-    if not wlan or not wlan.isconnected():
-        wlan = tryb_offline_utrzymuj_temperature(relay_pin, ds, roms)
-        if not wlan:
-            continue
+while xsrf_token:
+    sprawdz_i_polacz_wifi()
+    pobierz_prognoze_i_zapisz()
+    pobierz_tryb_dzialania()
+    pv_power = get_active_power(xsrf_token)
+    temp = odczytaj_temperature(ds, roms)
+    t = time.localtime()
+    hour = t[3]
+    minute = t[4]
 
-    ustaw_czas_google(api_key="AIzaSyD1c4oNyiLJ3VUbCv25dJIi6G8LceVZ9pI")
+    if TRYB_DZIALANIA == "standard_6":
+        grzanie_on = sterowanie_standard_6(temp, hour, minute, pv_power)
+    elif TRYB_DZIALANIA == "standard_8":
+        grzanie_on = sterowanie_standard_8(temp, hour, minute, pv_power)
+    elif TRYB_DZIALANIA == "zawsze38":
+        grzanie_on = sterowanie_zawsze38(temp, hour, minute, pv_power)
+    elif TRYB_DZIALANIA == "silowania":
+        grzanie_on = sterowanie_silowania(temp, hour, minute, pv_power)
+    elif TRYB_DZIALANIA == "update":
+        aktualizuj_z_github()
+    elif TRYB_DZIALANIA == "opt":
+        grzanie_on = opt(temp, hour, minute, pv_power)
+    else:
+        print("⚠️ Nieznany tryb! Domyślnie przełączam na 'zawsze38'")
+        grzanie_on = sterowanie_zawsze38(temp, hour, minute, pv_power)
+    print(
+        f"🔎 Sprawdzenie: godzina={hour}, PV={pv_power}, temp={temp}, TRYB={TRYB_DZIALANIA}"
+    )
+    relay_pin.value(1 if grzanie_on else 0)
+    zapisz_do_supabase(temp, grzanie_on, pv_power, TRYB_DZIALANIA, LOG_GAP)
 
-    xsrf_token = login_and_get_token()
-    if not xsrf_token:
-        print("❌ Nie udało się zalogować do FusionSolar – tryb offline.")
-        tryb_offline_utrzymuj_temperature(relay_pin, ds, roms)
-        continue
-
-    pobierz_prognoze_z_supabase()
-
-    while True:
-        wlan = network.WLAN(network.STA_IF)
-        if not wlan.isconnected():
-            print("⚠️ Połączenie Wi-Fi utracone – przechodzę w tryb offline.")
-            tryb_offline_utrzymuj_temperature(relay_pin, ds, roms)
-            break
-
-        pobierz_prognoze_i_zapisz()
-        pobierz_tryb_dzialania()
-        pv_power, relogin_needed = get_active_power(xsrf_token)
-        if relogin_needed:
-            print("🔑 Odświeżam token FusionSolar...")
-            xsrf_token = login_and_get_token()
-            if not xsrf_token:
-                print("❌ Nie udało się uzyskać nowego tokenu – przechodzę w tryb offline.")
-                tryb_offline_utrzymuj_temperature(relay_pin, ds, roms)
-                break
-
-            pv_power, relogin_needed = get_active_power(xsrf_token)
-            if relogin_needed:
-                print(
-                    "❌ FusionSolar ponownie odrzucił token po zalogowaniu – tryb offline."
-                )
-                tryb_offline_utrzymuj_temperature(relay_pin, ds, roms)
-                break
-
-        temp = odczytaj_temperature(ds, roms)
-        t = time.localtime()
-        hour = t[3]
-        minute = t[4]
-
-        if TRYB_DZIALANIA == "standard_6":
-            grzanie_on = sterowanie_standard_6(temp, hour, minute, pv_power)
-        elif TRYB_DZIALANIA == "standard_8":
-            grzanie_on = sterowanie_standard_8(temp, hour, minute, pv_power)
-        elif TRYB_DZIALANIA == "zawsze38":
-            grzanie_on = sterowanie_zawsze38(temp, hour, minute, pv_power)
-        elif TRYB_DZIALANIA == "silowania":
-            grzanie_on = sterowanie_silowania(temp, hour, minute, pv_power)
-        elif TRYB_DZIALANIA == "update":
-            aktualizuj_z_github()
-            continue
-        elif TRYB_DZIALANIA == "opt":
-            grzanie_on = opt(temp, hour, minute, pv_power)
-        else:
-            print("⚠️ Nieznany tryb! Domyślnie przełączam na 'zawsze38'")
-            grzanie_on = sterowanie_zawsze38(temp, hour, minute, pv_power)
-
-        print(
-            f"🔎 Sprawdzenie: godzina={hour}, PV={pv_power}, temp={temp}, TRYB={TRYB_DZIALANIA}"
-        )
-        relay_pin.value(1 if grzanie_on else 0)
-        zapisz_do_supabase(temp, grzanie_on, pv_power, TRYB_DZIALANIA, LOG_GAP)
-
-        print(
-            f"[{hour:02}:{minute:02}] Temp: {temp:.1f}°C | Grzanie: {'ON' if grzanie_on else 'OFF'} | PV: {pv_power}W | Tryb: {TRYB_DZIALANIA}"
-        )
-        time.sleep(300)
+    print(
+        f"[{hour:02}:{minute:02}] Temp: {temp:.1f}°C | Grzanie: {'ON' if grzanie_on else 'OFF'} | PV: {pv_power}W | Tryb: {TRYB_DZIALANIA}"
+    )
+    time.sleep(300)
