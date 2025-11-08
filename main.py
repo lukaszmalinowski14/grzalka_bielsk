@@ -8,13 +8,8 @@ import ntptime
 import onewire
 import ujson as json
 import urequests as requests
-import usocket as socket
-
-socket.setdefaulttimeout(3)  # 3 s na każdy connect/GET w urequests
 
 # --- Stałe ---
-OFFLINE_HEAT_CHUNK_SEC = 300  # 5 minut grzania, gdy zimno
-OFFLINE_IDLE_RETRY_SEC = 300  # co ile sekund sprawdzać net, gdy nie grzejemy
 LOGIN_URL = secrets.LOGIN_URL
 DEVLIST_URL = secrets.DEVLIST_URL
 USERNAME = secrets.USERNAME
@@ -37,63 +32,8 @@ PROGNOZA = 0.0
 LOG_GAP = {}
 
 
-def is_wifi_up():
-    try:
-        wlan = network.WLAN(network.STA_IF)
-        return wlan.isconnected()
-    except:
-        return False
-
-
-def has_internet():
-    """
-    Test 'internetu' – szybkie żądanie do znanego endpointu, który zwraca 204/200.
-    Jeśli Wi-Fi jest, ale DNS/routing nie działa, zwróci False.
-    """
-    try:
-        # lekki endpoint do sprawdzania łączności:
-        r = requests.get("http://connectivitycheck.gstatic.com/generate_204")
-        ok = r.status_code in (200, 204)
-        try:
-            r.close()
-        except:
-            pass
-        return ok
-    except:
-        return False
-
-
-def try_recover_connectivity():
-    """
-    Zwraca True tylko, jeśli **działa internet** (HTTP 204/200).
-    Ma krótkie, limitowane próby Wi-Fi, więc nie blokuje programu.
-    """
-    try:
-        if not is_wifi_up():
-            connect_wifi_fast(WIFI_SSID, WIFI_PASS)
-        return has_internet()
-    except:
-        return False
-
-
-def _is_session_expired(payload):
-    # oczekiwany format błędu:
-    # {"message":"USER_MUST_RELOGIN","success":False,"failCode":305,"immediately":True}
-    try:
-        return (
-            isinstance(payload, dict)
-            and payload.get("success") is False
-            and int(payload.get("failCode", 0)) == 305
-        )
-    except Exception:
-        return False
-
-
-def connect_wifi(ssid, password, timeout=30, max_attempts=None):
-    """
-    Łączy z Wi-Fi. Jeśli max_attempts=None => próbuje bez końca (jak dotąd).
-    Jeśli max_attempts to liczba => przerywa po tylu nieudanych próbach.
-    """
+# --- Połączenie Wi-Fi ---
+def connect_wifi(ssid, password, timeout=30):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     attempt = 1
@@ -106,18 +46,11 @@ def connect_wifi(ssid, password, timeout=30, max_attempts=None):
         if wlan.isconnected():
             print("✅ Połączono!", wlan.ifconfig())
             return wlan
-        print(f"❌ Timeout ({timeout}s).")
-        wlan.disconnect()
-        attempt += 1
-        if max_attempts is not None and attempt > max_attempts:
-            print("⛔ Maks. liczba prób Wi-Fi osiągnięta.")
-            return None
-        time.sleep(5)
-
-
-def connect_wifi_fast(ssid, password):
-    """Szybka, nieblokująca próba: 1 podejście, timeout 10 s."""
-    return connect_wifi(ssid, password, timeout=10, max_attempts=1)
+        else:
+            print(f"❌ Timeout ({timeout}s). Ponawiam...")
+            wlan.disconnect()
+            attempt += 1
+            time.sleep(5)
 
 
 # --- Pobierz czas lokalny z API ---
@@ -241,171 +174,36 @@ def pobierz_prognoze_i_zapisz():
         prognoza_wyslana = False  # 🔁 zresetuj flagę po 6:59
 
 
-# def aktualizuj_z_github():
-#     try:
-#         print("⬇️ Pobieranie najnowszego main.py z GitHub...")
-#         response = requests.get(GITHUB_RAW_URL)
-#         if response.status_code == 200:
-#             with open("main.py", "w") as f:
-#                 f.write(response.text)
-
-#             # ZMIANA TRYBU na zawsze38 (PATCH id=1)
-#             try:
-#                 print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38")
-#                 url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
-#                 headers = {
-#                     "apikey": SUPABASE_PUBLISHABLE_KEY,
-#                     "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
-#                     "Content-Type": "application/json",
-#                 }
-#                 payload = json.dumps({"tryb": "zawsze38"})
-#                 res = requests.patch(url, headers=headers, data=payload)
-#                 print("📬 Supabase response:", res.status_code, res.text)
-#             except Exception as e:
-#                 print("❌ Nie udało się zresetować trybu:", e)
-
-#             print("✅ Zaktualizowano main.py – restartuję Pico...")
-#             time.sleep(2)
-#             machine.reset()
-#         else:
-#             print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
-#     except Exception as e:
-#         print("❌ Wyjątek podczas aktualizacji:", e)
-
-
 def aktualizuj_z_github():
-    import usocket as socket
-
     try:
-        import uos as os  # MicroPython
-    except:
-        import os  # fallback (gdybyś uruchamiał gdzie indziej)
-
-    # Pliki do aktualizacji
-    TARGET = "main.py"
-    TMP = "main.new"
-    BAK = "main.bak"
-
-    # Zwiększ timeout tylko na czas aktualizacji
-    try:
-        old_to = socket.getdefaulttimeout()
-    except:
-        old_to = None
-
-    try:
-        socket.setdefaulttimeout(12)  # luźniejszy limit na pobranie pliku
-
         print("⬇️ Pobieranie najnowszego main.py z GitHub...")
-        headers = {"Cache-Control": "no-cache"}
-        r = requests.get(GITHUB_RAW_URL, headers=headers)
+        response = requests.get(GITHUB_RAW_URL)
+        if response.status_code == 200:
+            with open("main.py", "w") as f:
+                f.write(response.text)
 
-        try:
-            if r.status_code != 200:
-                print("❌ Błąd pobierania pliku z GitHub:", r.status_code)
-                return
-
-            content = r.text
-        finally:
+            # ZMIANA TRYBU na zawsze38 (PATCH id=1)
             try:
-                r.close()
-            except:
-                pass
+                print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38")
+                url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
+                headers = {
+                    "apikey": SUPABASE_PUBLISHABLE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
+                    "Content-Type": "application/json",
+                }
+                payload = json.dumps({"tryb": "zawsze38"})
+                res = requests.patch(url, headers=headers, data=payload)
+                print("📬 Supabase response:", res.status_code, res.text)
+            except Exception as e:
+                print("❌ Nie udało się zresetować trybu:", e)
 
-        # Prosta walidacja, żeby nie podmienić na śmieci
-        if (
-            not content
-            or len(content) < 2000
-            or ("while True" not in content and "machine.reset" not in content)
-        ):
-            print(
-                "❌ Plik z GitHub wygląda podejrzanie (za krótki lub brak znaczników). Aktualizacja przerwana."
-            )
-            return
-
-        # Zapis do pliku tymczasowego
-        try:
-            # usuń stary TMP jeśli był
-            try:
-                if TMP in os.listdir():
-                    os.remove(TMP)
-            except:
-                pass
-
-            with open(TMP, "w") as f:
-                f.write(content)
-        except Exception as e:
-            print("❌ Nie udało się zapisać pliku tymczasowego:", e)
-            return
-
-        # Kopia zapasowa obecnego main.py
-        try:
-            if TARGET in os.listdir():
-                try:
-                    if BAK in os.listdir():
-                        os.remove(BAK)
-                except:
-                    pass
-                os.rename(TARGET, BAK)
-        except Exception as e:
-            print("⚠️ Nie udało się wykonać backupu:", e)
-
-        # Podmiana atomowa: TMP -> TARGET
-        try:
-            try:
-                if TARGET in os.listdir():
-                    os.remove(TARGET)
-            except:
-                pass
-            os.rename(TMP, TARGET)
-        except Exception as e:
-            print("❌ Nie udało się podmienić main.py:", e)
-            # W razie porażki spróbuj przywrócić z backupu
-            try:
-                if (BAK in os.listdir()) and (TARGET not in os.listdir()):
-                    os.rename(BAK, TARGET)
-            except:
-                pass
-            return
-
-        # (opcjonalnie) wymuś tryb bezpieczny po aktualizacji
-        try:
-            print("🔁 Aktualizacja zakończona – resetuję tryb na zawsze38 (Supabase)")
-            url = SUPABASE_URL + "/rest/v1/ustawienia?id=eq.1"
-            headers = {
-                "apikey": SUPABASE_PUBLISHABLE_KEY,
-                "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}",
-                "Content-Type": "application/json",
-            }
-            payload = json.dumps({"tryb": "zawsze38"})
-            res = requests.patch(url, headers=headers, data=payload)
-            print("📬 Supabase response:", res.status_code, res.text)
-            try:
-                res.close()
-            except:
-                pass
-        except Exception as e:
-            print("❌ Nie udało się zresetować trybu:", e)
-
-        print("✅ Zaktualizowano main.py – restartuję Pico...")
-        time.sleep(2)
-        machine.reset()
-
+            print("✅ Zaktualizowano main.py – restartuję Pico...")
+            time.sleep(2)
+            machine.reset()
+        else:
+            print("❌ Błąd pobierania pliku z GitHub:", response.status_code)
     except Exception as e:
         print("❌ Wyjątek podczas aktualizacji:", e)
-
-    finally:
-        # Przywróć poprzedni timeout
-        try:
-            if old_to is not None:
-                socket.setdefaulttimeout(old_to)
-        except:
-            pass
-        # Sprzątanie TMP jeśli został
-        try:
-            if TMP in os.listdir():
-                os.remove(TMP)
-        except:
-            pass
 
 
 # ZAPIS DANYCH LIVE DO SUPABASE
@@ -463,59 +261,6 @@ def sprawdz_i_polacz_wifi():
     if not wlan.isconnected():
         print("Utracono Wi-Fi – ponawiam połączenie...")
         connect_wifi(WIFI_SSID, WIFI_PASS)
-
-
-def offline_maintain_38_chunks(ds, roms, relay_pin):
-    """
-    Tryb awaryjny bez internetu:
-    - temp < TEMP  => grzej 5 min, potem sprawdź łączność (Wi-Fi + internet),
-    - temp >= TEMP => nie grzej, odczekaj 5 min, potem sprawdź łączność,
-    - jeśli internet wróci – natychmiast wyjdź (wracamy do trybu online).
-    """
-    while True:
-        # 1) próba odzyskania łączności przed cyklem
-        if try_recover_connectivity():
-            print("🌐 Internet dostępny — wychodzę z trybu offline.")
-            return
-
-        # 2) odczyt temperatury (awaryjnie: przy błędzie traktujemy jak za zimno)
-        try:
-            temp = odczytaj_temperature(ds, roms)
-        except Exception as e:
-            print("❌ Offline: błąd odczytu DS18B20:", e)
-            temp = TEMP - 10  # konserwatywnie: potraktuj jako zimno
-
-        t = time.localtime()
-        print(
-            f"[{t[3]:02}:{t[4]:02}] (OFFLINE) Temp: {temp:.1f}°C | Próg: {TEMP:.1f}°C"
-        )
-
-        if temp < TEMP:
-            # ❄️ za zimno — włącz grzałkę na 5 min
-            print("🔥 (OFFLINE) Za zimno — grzeję 5 min.")
-            relay_pin.value(1)
-            time.sleep(OFFLINE_HEAT_CHUNK_SEC)
-            relay_pin.value(0)
-
-            # po bloku 5 min sprawdź łączność i ewentualnie wróć online
-            if try_recover_connectivity():
-                print("🌐 Internet wrócił po bloku grzania — wracam online.")
-                return
-
-            # jeśli wciąż offline — pętla wraca na początek: znów sprawdzimy temp itd.
-        else:
-            # 🌡️ wystarczająco ciepło — nie grzej, odczekaj 5 min i dopiero sprawdź łączność
-            relay_pin.value(0)
-            print(
-                "🧊 (OFFLINE) Temp ≥ 38°C — nie grzeję. Odczekam 5 min przed próbą łączności."
-            )
-            time.sleep(OFFLINE_IDLE_RETRY_SEC)
-
-            if try_recover_connectivity():
-                print("🌐 Internet wrócił — wracam online.")
-                return
-
-            # jeśli dalej offline — pętla wraca i znów oceni temp
 
 
 def sterowanie_standard_6(temp, godzina, minuta, pv_power):
@@ -695,70 +440,18 @@ def login_and_get_token():
 
 # --- Odczyt PV ---
 def get_active_power(xsrf_token):
-    """Zwraca (moc_W, ewentualnie_nowy_token). Gdy sesja wygasła, próbuje zalogować i powtarza raz."""
     global LOG_GAP
-
-    def _call(token):
-        url_headers = {"Content-Type": "application/json", "xsrf-token": token}
-        payload = {"devIds": DEVIDS, "devTypeId": DEVTYPEID}
-        r = requests.post(DEVLIST_URL, json=payload, headers=url_headers)
-        return r
-
     try:
-        r = _call(xsrf_token)
-        try:
-            if r.status_code == 200:
-                data = r.json()
-
-                # 1) Sesja wygasła?
-                if _is_session_expired(data):
-                    print("🔒 Sesja FusionSolar wygasła (305) – loguję ponownie...")
-                    new_token = login_and_get_token()
-                    if not new_token:
-                        print("❌ Ponowne logowanie nieudane.")
-                        return 0.0, None
-
-                    # 2) retry z nowym tokenem
-                    r2 = _call(new_token)
-                    try:
-                        if r2.status_code == 200:
-                            data2 = r2.json()
-                            if _is_session_expired(data2):
-                                print("❌ Ponownie: USER_MUST_RELOGIN – przerywam.")
-                                return 0.0, None
-
-                            LOG_GAP = data2
-                            power = float(
-                                data2["data"][0]["dataItemMap"].get("active_power", 0)
-                            )
-                            return power, new_token
-                        else:
-                            print("❌ DEVLIST retry HTTP:", r2.status_code)
-                            return 0.0, None
-                    finally:
-                        try:
-                            r2.close()
-                        except:
-                            pass
-
-                # 3) Happy path
-                LOG_GAP = data
-                power = float(data["data"][0]["dataItemMap"].get("active_power", 0))
-                return power, None
-
-            else:
-                print("❌ DEVLIST HTTP:", r.status_code)
-                return 0.0, None
-        finally:
-            try:
-                r.close()
-            except:
-                pass
-
-    except Exception as e:
-        print("❌ get_active_power błąd:", e)
-
-    return 0.0, None
+        payload = {"devIds": DEVIDS, "devTypeId": DEVTYPEID}
+        headers = {"Content-Type": "application/json", "xsrf-token": xsrf_token}
+        response = requests.post(DEVLIST_URL, json=payload, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            LOG_GAP = data
+            return float(data["data"][0]["dataItemMap"].get("active_power", 0))
+    except:
+        pass
+    return 0
 
 
 # --- Temperatura DS18B20 ---
@@ -809,29 +502,11 @@ pobierz_prognoze_z_supabase()
 relay_pin = machine.Pin(16, machine.Pin.OUT)
 relay_pin.value(0)
 
-while True:
-    # brak **internetu** ⇒ tryb offline
-    if not has_internet():  # (ostrzejsze niż samo is_wifi_up)
-        print("📵 Brak internetu — tryb offline 5-min blokami.")
-        offline_maintain_38_chunks(ds, roms, relay_pin)
-        # tu wracamy już z działającym internetem
+while xsrf_token:
     sprawdz_i_polacz_wifi()
     pobierz_prognoze_i_zapisz()
     pobierz_tryb_dzialania()
-
-    # jeśli brak tokenu (lub poprzednio nieudane odświeżenie) – spróbuj zalogować
-    if not xsrf_token:
-        xsrf_token = login_and_get_token()
-        if not xsrf_token:
-            print("❌ Brak tokenu – śpię 60s i próbuję ponownie.")
-            time.sleep(60)
-            continue
-
-    # odczyt PV z auto-relogiem
-    pv_power, maybe_new_token = get_active_power(xsrf_token)
-    if maybe_new_token:
-        xsrf_token = maybe_new_token  # zaktualizuj token po relogu
-
+    pv_power = get_active_power(xsrf_token)
     temp = odczytaj_temperature(ds, roms)
     t = time.localtime()
     hour = t[3]
@@ -847,14 +522,11 @@ while True:
         grzanie_on = sterowanie_silowania(temp, hour, minute, pv_power)
     elif TRYB_DZIALANIA == "update":
         aktualizuj_z_github()
-        # aktualizuj_z_github() robi reset – więc dalszy kod i tak się nie wykona
-        continue
     elif TRYB_DZIALANIA == "opt":
         grzanie_on = opt(temp, hour, minute, pv_power)
     else:
-        print("⚠️ Nieznany tryb! Domyślnie 'zawsze38'")
+        print("⚠️ Nieznany tryb! Domyślnie przełączam na 'zawsze38'")
         grzanie_on = sterowanie_zawsze38(temp, hour, minute, pv_power)
-
     print(
         f"🔎 Sprawdzenie: godzina={hour}, PV={pv_power}, temp={temp}, TRYB={TRYB_DZIALANIA}"
     )
